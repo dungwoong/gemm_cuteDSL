@@ -127,6 +127,13 @@ class GemmSM90:
         self.populate_smem_layouts()
         self.populate_shared_storage()
 
+        # EPILOGUE
+        tma_atom_d, tma_tensor_d = self._get_tma_epi_atoms_and_tensors(
+            c,
+            self.epi_smem_layout_staged,
+            self.epi_tile_mn,
+        )
+
         # Get TMA tensors and atoms
         self.tma_ab_load_bytes = 0
         tma_atom_a, tma_tensor_a = self._get_tma_load_and_tensors_incr_bytes(a, self.a_smem_layout_staged, (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[2]), self.mcast_ctas_a, self.a_dtype)
@@ -146,6 +153,7 @@ class GemmSM90:
             ts_params,
             self.cluster_layout_mnk,
             self.epi_smem_layout_staged,
+            tma_atom_d, tma_tensor_d
         ).launch(grid=grid, block=[self.threads_per_cta, 1, 1], cluster=self.cluster_shape_mnk, stream=stream) # min_blocks_per_mp=1 only if kernel is large
     
     @cute.kernel
@@ -157,7 +165,9 @@ class GemmSM90:
                a_smem_layout_staged: cute.ComposedLayout, b_smem_layout_staged: cute.ComposedLayout,
                tile_sched_params: ParamsBase,
                cluster_layout_mnk: cute.Layout,
-               epi_smem_layout: cute.Layout
+               epi_smem_layout: cute.Layout,
+               epi_copy: cute.CopyAtom, # S2G
+               epi_tensor: cute.Tensor, # GMEM TMA tensor for storing
                ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
 
@@ -378,6 +388,24 @@ class GemmSM90:
         )
         self.tma_ab_load_bytes += cute.size_in_bytes(dtype, smem_layout)
         return tma_atom, tma_tensor
+    
+    @staticmethod
+    def _get_tma_epi_atoms_and_tensors(
+            tensor_d: cute.Tensor,
+            epi_smem_layout_staged: cute.ComposedLayout,
+            epi_tile: Tuple[int, int],
+    ) -> Tuple[cute.CopyAtom, cute.Tensor]:
+        # ASSUME we're just storing for now
+        epi_smem_layout = cute.slice_(epi_smem_layout_staged, (None, None, 0))
+        d_cta_v_layout = cute.composition(cute.make_identity_layout(tensor_d.shape), epi_tile) # change it to TMA-usable format with 1@0, 1@1 etc.
+
+        op = cute.nvgpu.cpasync.CopyBulkTensorTileS2GOp()
+
+        # Tiles D with d_cta_v_layout, prepares to copy to d
+        tma_atom_d, tma_tensor_d = cute.nvgpu.cpasync.make_tiled_tma_atom(
+            op, tensor_d, epi_smem_layout, d_cta_v_layout
+        )
+        return tma_atom_d, tma_tensor_d
 
     # Easy Population Helpers
     # -------------------------------------

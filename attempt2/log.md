@@ -2,7 +2,7 @@
 
 ## Changes
 - Gemm constructor, add epi tile and epi stage
-- Remember, k=64. Let's just make the epi tile (128, 32) with 4 stages for now, and let's make it overlap with other stuff
+- Remember, k=64. Let's just make the epi tile (128, 32) with 2 stages for now, and let's make it overlap with other stuff
 - Added a reuse_ab flag
 - Quick analysis: (128, 64) + (256, 64) * 2(stages) * 2(bytes) is 98KB. Add (128, 32) * 2(stages) * 2(B) = 16384. SM100 is 227KB(look at `cutlass.utils.get_smem_capacity_in_bytes`). PyTorch kernel requests 213KB/block
 - Need to change how we allocate SMEM
@@ -65,3 +65,5 @@ This helps them figure out where we're going in GMEM using get_hier_coord
 - actually, they use TMA partition to get bSG_sD and gD
 - you then have the `epi_tile_layout` which is just row major I guess
 
+## Making the TMA atom
+- `cpasync.CopyReduceBulkTensorTileS2GOp(cute.ReductionOp.ADD)` helps you do AB+C, so it adds to whatever's already there
