@@ -1,11 +1,25 @@
 # Adding Epilogue
 
+## Changes
+- Gemm constructor, add epi tile and epi stage
+- Remember, k=64. Let's just make the epi tile (128, 32) with 4 stages for now, and let's make it overlap with other stuff
+
 ## Tile shape and stages
 - epi tile has to be tilable into CTA tile, you want a bigger tile typically
 - I dunno about stages, they just have a conditional. Maybe I can just choose 2 for now and go from there once I understand things
 - No epi C stage, let's not worry about that
-- Let's not reuse smem AB, or actually let's reuse it for now since we're not persistent
-    - in quack gemm, they try to take up remaining smem with epilogue
+- Added a reuse_ab flag
+- Quick analysis: (128, 64) + (256, 64) * 2(stages) * 2(bytes) is 98KB. Add (128, 32) * 2(stages) * 2(B) = 16384. SM100 is 227KB(look at `cutlass.utils.get_smem_capacity_in_bytes`). PyTorch kernel requests 213KB/block
+- Need to change how we allocate SMEM
+    - Quack gemm uses has_D and is_persistent as their flags. sD is their epilogue buffer, and `epi_smem_size=0` if they choose to reuse A and B
+    - If reusing, they do a recast_ptr and make_tensor like on line 633 in quack gemm (`sD_ptr = cute.recast_ptr(sA.iterator, epi_smem_layout.inner, dtype=self.d_dtype)`)
+    - Otherwise, they just use has_D
+    - Done, I copied their code in
+- Need to allocate epi if not reusing AB
+    - Quack does it on line 1888 `quack_sm90_utils.make_smem_layout_epi`
+    - Done, and also change `epi_smem_size` based on what goes on
+- Added `is_persistent` and startup check for `reuse_AB` based on it
+- TODO: add _make_tma_epi_atoms_and_tensors to handle the S2G, then figure out how to retile accumulators and handle R2S
 
 ## Number of epilogue warps
 - just all warps that participate in MMA, for pingpong it should just be one WG
