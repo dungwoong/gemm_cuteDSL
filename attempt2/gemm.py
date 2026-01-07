@@ -578,64 +578,74 @@ class GemmSM90:
 
         self.shared_storage = SharedStorage
 
-m, n, k = 4096, 4096, 4096
-flops = 2 * m * n * k
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", type=str, choices=["debug", "speed", "ncu"])
+    args = parser.parse_args()
+    IS_NCU = args.mode == 'ncu'
+    IS_DEBUG = args.mode == 'debug'
+    IS_SPEED = args.mode == 'speed'
 
-def get_tflops(time_ms):
-    return (flops / (time_ms / 1e3)) / 1e12
+    m, n, k = 4096, 4096, 4096
+    flops = 2 * m * n * k
 
-a = torch.randn((m, k), dtype=torch.bfloat16).to('cuda')
-b = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')
-c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
-ref = a @ b.t()
-convert_from_dlpack = lambda tensor: (
-    from_dlpack(tensor.detach(), assumed_align=16).mark_compact_shape_dynamic(
-        mode=0, stride_order=(0, 1)
+    def get_tflops(time_ms):
+        return (flops / (time_ms / 1e3)) / 1e12
+
+    a = torch.randn((m, k), dtype=torch.bfloat16).to('cuda')
+    b = torch.randn((n, k), dtype=torch.bfloat16).to('cuda')
+    c = torch.empty((m, n), dtype=torch.bfloat16).to('cuda')
+    ref = a @ b.t()
+    convert_from_dlpack = lambda tensor: (
+        from_dlpack(tensor.detach(), assumed_align=16).mark_compact_shape_dynamic(
+            mode=0, stride_order=(0, 1)
+        )
     )
-)
-a_cute, b_cute, c_cute = [convert_from_dlpack(x) for x in (a, b, c)]
-current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
-gemm = GemmSM90(tile_shape_mn=(128, 256), 
-                epi_tile_mn=(128, 32),
-                cluster_shape_mnk=(2, 1, 1), 
-                atom_layout_mn=(2, 1),
-                reuse_ab=False)
-compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
-compiled_gemm(a_cute, b_cute, c_cute, current_stream)
-print(ref)
-print(c)
+    a_cute, b_cute, c_cute = [convert_from_dlpack(x) for x in (a, b, c)]
+    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    gemm = GemmSM90(tile_shape_mn=(128, 256), 
+                    epi_tile_mn=(128, 32),
+                    cluster_shape_mnk=(2, 1, 1), 
+                    atom_layout_mn=(2, 1),
+                    reuse_ab=False)
+    compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
+    compiled_gemm(a_cute, b_cute, c_cute, current_stream)
+    print(ref)
+    print(c)
 
-# n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
-# print('n_incorrect :', n_incorrect)
+    if IS_DEBUG:
+        n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
+        print('n_incorrect :', n_incorrect)
 
-def profile_ms(op, repeats=30):
+    def profile_ms(op, repeats=30):
 
-    clear_cache = torch.cuda.empty_cache
-    clear_cache()
+        clear_cache = torch.cuda.empty_cache
+        clear_cache()
 
-    # warmup
-    op()
-    torch.cuda.synchronize()
-
-    start = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
-    end = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
-
-    for i in range(repeats):
-        # clear_cache()
-        start[i].record()
+        # warmup
         op()
-        end[i].record()
+        torch.cuda.synchronize()
 
-    torch.cuda.synchronize()
-    return statistics.median([s.elapsed_time(e) for s, e in zip(start, end)])
+        start = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
+        end = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
 
-@torch.compile
-def torch_gemm():
-    return a @ b.t()
+        for i in range(repeats):
+            # clear_cache()
+            start[i].record()
+            op()
+            end[i].record()
 
-if False:
-    my_ms = profile_ms(lambda: compiled_gemm(a_cute, b_cute, c_cute, current_stream))
-    other_ms = profile_ms(torch_gemm)
-    print(f'{my_ms=}, {other_ms=}')
-    my_flops, other_flops = get_tflops(my_ms), get_tflops(other_ms)
-    print(f'{my_flops=}, {other_flops=}')
+        torch.cuda.synchronize()
+        return statistics.median([s.elapsed_time(e) for s, e in zip(start, end)])
+
+    @torch.compile
+    def torch_gemm():
+        return a @ b.t()
+
+    if IS_SPEED:
+        my_ms = profile_ms(lambda: compiled_gemm(a_cute, b_cute, c_cute, current_stream))
+        other_ms = profile_ms(torch_gemm)
+        print(f'{my_ms=}, {other_ms=}')
+        my_flops, other_flops = get_tflops(my_ms), get_tflops(other_ms)
+        print(f'{my_flops=}, {other_flops=}')
