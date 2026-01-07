@@ -165,7 +165,7 @@ class GemmSM90:
                a_smem_layout_staged: cute.ComposedLayout, b_smem_layout_staged: cute.ComposedLayout,
                tile_sched_params: ParamsBase,
                cluster_layout_mnk: cute.Layout,
-               epi_smem_layout: cute.Layout,
+               epi_smem_layout: cute.ComposedLayout,
                epi_copy: cute.CopyAtom, # S2G
                epi_mC: cute.Tensor, # GMEM TMA tensor for storing
                ):
@@ -290,7 +290,7 @@ class GemmSM90:
                     elem_ty_acc=self.acc_dtype
                 )
                 copy_atom_C = cute.make_copy_atom(
-                    cute.nvgpu.warp.StMatrix16x8x8bOp(
+                    cute.nvgpu.warp.StMatrix8x8x16bOp(
                         self.c_layout.is_m_major_c(),
                         4,
                     ),
