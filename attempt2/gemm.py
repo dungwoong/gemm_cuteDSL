@@ -539,7 +539,9 @@ class GemmSM90:
         self.cta_tile_shape_mnk = (self.cta_tile_shape_mnk[0], self.cta_tile_shape_mnk[1], mma_k * mma_inst_tile_k)
     
     def populate_smem_layouts(self):
-        self.a_smem_layout_staged, self.b_smem_layout_staged, self.epi_smem_layout_staged = self._get_smem_layouts(self.cta_tile_shape_mnk, self.a_dtype, self.a_layout, self.b_dtype, self.b_layout, self.ab_stage)
+        self.a_smem_layout_staged, self.b_smem_layout_staged, self.epi_smem_layout_staged = self._get_smem_layouts(self.cta_tile_shape_mnk, self.a_dtype, self.a_layout, 
+                                                                                                                   self.b_dtype, self.b_layout, self.ab_stage,
+                                                                                                                   self.c_dtype, self.c_layout, self.epi_tile_mn, self.epi_stage)
         if not self.reuse_ab:
             self.epi_smem_size = cute.cosize(self.epi_smem_layout_staged)
 
