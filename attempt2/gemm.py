@@ -284,11 +284,11 @@ class GemmSM90:
                 
                 # I don't get why they need two different copies, maybe this is to handle different dtypes?
                 # since otherwise copy_atom_r2s is literally the same as copy_atom_C
-                copy_atom_r2s = sm90_utils.sm90_get_smem_store_op(
-                    self.c_layout,
-                    elem_ty_d=self.c_dtype,
-                    elem_ty_acc=self.acc_dtype
-                )
+                # copy_atom_r2s = sm90_utils.sm90_get_smem_store_op(
+                #     self.c_layout,
+                #     elem_ty_d=self.c_dtype,
+                #     elem_ty_acc=self.acc_dtype
+                # )
                 copy_atom_C = cute.make_copy_atom(
                     cute.nvgpu.warp.StMatrix8x8x16bOp(
                         self.c_layout.is_m_major_c(),
@@ -297,10 +297,11 @@ class GemmSM90:
                     self.c_dtype,
                 )
                 tiled_copy_C_Atom = cute.make_tiled_copy_C_atom(copy_atom_C, tiled_mma)
-                tiled_copy_r2s = cute.make_tiled_copy_S(
-                    copy_atom_r2s,
-                    tiled_copy_C_Atom,
-                )
+                # tiled_copy_r2s = cute.make_tiled_copy_S(
+                #     copy_atom_r2s,
+                #     tiled_copy_C_Atom,
+                # )
+                tiled_copy_r2s = tiled_copy_C_Atom
 
                 # gC_mnl stores where our output tile should be
                 gC_mnl = cute.local_tile(epi_mC, self.cta_tile_shape_mnk, tile_coord_mnk, proj=(1, 1, None))
@@ -375,12 +376,6 @@ class GemmSM90:
                 
                 if warp_idx == 0:
                     c_pipeline.producer_tail() # wait_group(0)
-
-                # OLD EPILOGUE
-                # tCgC = thr_mma.partition_C(gC_mnl)
-                # epi_accumulator = cute.make_rmem_tensor_like(accumulators, self.c_dtype)
-                # epi_accumulator.store(accumulators.load().to(mC.element_type))
-                # cute.autovec_copy(epi_accumulator, tCgC)
 
                 # no need to fetch -- producer does that
                 tile_scheduler.advance_to_next_work() # this just does some arriving I think, if this was an actual tile scheduler
