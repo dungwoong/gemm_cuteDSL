@@ -598,7 +598,8 @@ current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
 gemm = GemmSM90(tile_shape_mn=(128, 256), 
                 epi_tile_mn=(128, 32),
                 cluster_shape_mnk=(2, 1, 1), 
-                atom_layout_mn=(2, 1))
+                atom_layout_mn=(2, 1),
+                reuse_ab=False)
 compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
 compiled_gemm(a_cute, b_cute, c_cute, current_stream)
 print(ref)
