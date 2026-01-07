@@ -167,7 +167,7 @@ class GemmSM90:
                cluster_layout_mnk: cute.Layout,
                epi_smem_layout: cute.Layout,
                epi_copy: cute.CopyAtom, # S2G
-               epi_tensor: cute.Tensor, # GMEM TMA tensor for storing
+               epi_mC: cute.Tensor, # GMEM TMA tensor for storing
                ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
 
@@ -271,11 +271,116 @@ class GemmSM90:
                 # you have to return it
                 ab_consumer_state, tiled_mma = self.consume_mainloop(k_iters, tiled_mma, accumulators, ab_pipeline, ab_consumer_state, tCrA, tCrB)
 
-                gC_mnl = cute.local_tile(mC, self.cta_tile_shape_mnk, tile_coord_mnk, proj=(1, 1, None))
-                tCgC = thr_mma.partition_C(gC_mnl)
-                epi_accumulator = cute.make_rmem_tensor_like(accumulators, self.c_dtype)
-                epi_accumulator.store(accumulators.load().to(mC.element_type))
-                cute.autovec_copy(epi_accumulator, tCgC)
+                # Epilogue ##################################################
+                # cute.nvgpu.warpgroup.wait_group(0) # we're not pipelining, so skip
+
+                # TODO do we need a cluster arrive/wait? named barrier?
+                epilogue_barrier = pipeline.NamedBarrier(
+                    barrier_id=int(1),
+                    num_threads=self.mma_warpgroups * 4 * cute.arch.WARP_SIZE
+                )
+                if const_expr(self.reuse_ab):
+                    epilogue_barrier.arrive_and_wait()
+                
+                # I don't get why they need two different copies, maybe this is to handle different dtypes?
+                # since otherwise copy_atom_r2s is literally the same as copy_atom_C
+                copy_atom_r2s = sm90_utils.sm90_get_smem_store_op(
+                    self.c_layout,
+                    elem_ty_d=self.c_dtype,
+                    elem_ty_acc=self.acc_dtype
+                )
+                copy_atom_C = cute.make_copy_atom(
+                    cute.nvgpu.warp.StMatrix16x8x8bOp(
+                        self.c_layout.is_m_major_c(),
+                        4,
+                    ),
+                    self.c_dtype,
+                )
+                tiled_copy_C_Atom = cute.make_tiled_copy_C_atom(copy_atom_C, tiled_mma)
+                tiled_copy_r2s = cute.make_tiled_copy_S(
+                    copy_atom_r2s,
+                    tiled_copy_C_Atom,
+                )
+
+                # gC_mnl stores where our output tile should be
+                gC_mnl = cute.local_tile(epi_mC, self.cta_tile_shape_mnk, tile_coord_mnk, proj=(1, 1, None))
+                thr_copy_r2s = tiled_copy_r2s.get_slice(tidx)
+                tRS_sD = thr_copy_r2s.partition_D(sD) # sD follows epi_smem_layout (m, n, stages)?
+                tRS_rAcc = tiled_copy_r2s.retile(accumulators)
+
+                rD_shape = cute.shape(thr_copy_r2s.partition_S(sD)) # registers needed for one epi tile
+                # register layout, but for one stage of the epilogue
+                tRS_rD_layout = cute.make_layout(rD_shape[:3])
+                tRS_rD = cute.make_rmem_tensor_like(tRS_rD_layout, self.acc_dtype)
+                size_tRS_rD = cute.size(tRS_rD)
+
+                sepi_for_tma_partition = cute.group_modes(sD, 0, 2)
+                tCgC_for_tma_partition = cute.zipped_divide(gC_mnl, self.epi_tile_mn)
+
+                # sD has 4 stages, gD has 8 indices
+                bSG_sD, bSG_gD = cute.nvgpu.cpasync.tma_partition(
+                    epi_copy,
+                    0,
+                    cute.make_layout(1),
+                    sepi_for_tma_partition,
+                    tCgC_for_tma_partition,
+                )
+
+                epi_tile_num = cute.size(tCgC_for_tma_partition, mode=[1])
+                epi_tile_shape = tCgC_for_tma_partition.shape[1] # the layout of epi tiles
+                epi_tile_layout = cute.make_layout(
+                    epi_tile_shape, stride=(epi_tile_shape[1], 1)
+                )
+
+                # this sets up a bulk wait pipeline
+                c_producer_group = pipeline.CooperativeGroup(
+                    pipeline.Agent.Thread, self.threads_per_cta
+                )
+                c_pipeline = pipeline.PipelineTmaStore.create(
+                    num_stages=self.epi_stage,
+                    producer_group=c_producer_group,
+                )
+
+                for epi_idx in cutlass.range_constexpr(epi_tile_num):
+                    for epi_v in cutlass.range_constexpr(size_tRS_rD):
+                        # Take a slice of the accumulators
+                        tRS_rD[epi_v] = tRS_rAcc[epi_idx * size_tRS_rD + epi_v]
+                    
+                    # Type conversion
+                    tRS_rD_out = cute.make_rmem_tensor_like(tRS_rD_layout, self.c_dtype)
+                    acc_vec = tRS_rD.load()
+                    tRS_rD_out.store(acc_vec.to(self.c_dtype))
+
+                    epi_buffer = epi_idx % cute.size(tRS_sD, mode=[3])
+                    # R2S stmatrix
+                    cute.copy(
+                        tiled_copy_r2s, tRS_rD_out, tRS_sD[(None, None, None, epi_buffer)]
+                    )
+                    cute.arch.fence_proxy(
+                        cute.arch.ProxyKind.async_shared,
+                        space=cute.arch.SharedSpace.shared_cta,
+                    )
+                    epilogue_barrier.arrive_and_wait()
+                    # NEED S2G
+                    gmem_coord = epi_tile_layout.get_hier_coord(epi_idx) # literally like (0, 0) to (7, 0)
+                    if warp_idx == 0:
+                        cute.copy(
+                            epi_copy,
+                            bSG_sD[(None, epi_buffer)],
+                            bSG_gD[(None, gmem_coord)],
+                        )
+                        c_pipeline.producer_commit()
+                        c_pipeline.producer_acquire()
+                    epilogue_barrier.arrive_and_wait()
+                
+                if warp_idx == 0:
+                    c_pipeline.producer_tail() # wait_group(0)
+
+                # OLD EPILOGUE
+                # tCgC = thr_mma.partition_C(gC_mnl)
+                # epi_accumulator = cute.make_rmem_tensor_like(accumulators, self.c_dtype)
+                # epi_accumulator.store(accumulators.load().to(mC.element_type))
+                # cute.autovec_copy(epi_accumulator, tCgC)
 
                 # no need to fetch -- producer does that
                 tile_scheduler.advance_to_next_work() # this just does some arriving I think, if this was an actual tile scheduler

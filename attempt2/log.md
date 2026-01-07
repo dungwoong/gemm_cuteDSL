@@ -14,7 +14,8 @@
     - Quack does it on line 1888 `quack_sm90_utils.make_smem_layout_epi`
     - Done, and also change `epi_smem_size` based on what goes on
 - Added `is_persistent` and startup check for `reuse_AB` based on it
-- TODO: add _make_tma_epi_atoms_and_tensors to handle the S2G, then figure out how to retile accumulators and handle R2S
+- Added _make_tma_epi_atoms_and_tensors to handle the S2G, 
+- TODO figure out how to retile accumulators and handle R2S, create the copy and just print what's in the epi SMEM to make sure things match for now
 
 ## Number of epilogue warps
 - just all warps that participate in MMA, for pingpong it should just be one WG
@@ -67,3 +68,9 @@ This helps them figure out where we're going in GMEM using get_hier_coord
 
 ## Making the TMA atom
 - `cpasync.CopyReduceBulkTensorTileS2GOp(cute.ReductionOp.ADD)` helps you do AB+C, so it adds to whatever's already there
+- [docs](https://docs.nvidia.com/cuda/parallel-thread-execution/#data-movement-and-conversion-instructions-cp-async-bulk-tensor) You can use `.bulk_group` instead of `.mbarrier::...` for stores from shared to global. CuteDSL mentions they use the `.tile` load mode
+
+## Barriers
+- We have epi warps. If not persistent, all these epilogue warps must sync up since SMEM for tensor A is reused.
+- Otherwise we arrive and wait at a barrier AFTER stmatrix to get ready for TMA store.
+- You CANNOT use syncthreads since that expects ALL threads(including producer)
