@@ -5,6 +5,8 @@ import cuda.bindings.driver as cuda
 
 import torch
 import statistics
+import functools
+from triton import runtime
 
 import cutlass
 from cutlass import Boolean, Int32, const_expr
@@ -604,8 +606,9 @@ if __name__ == "__main__":
                     reuse_ab=False)
     compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
     compiled_gemm(a_cute, b_cute, c_cute, current_stream)
-    print(ref)
-    print(c)
+    if IS_DEBUG:
+        print(ref)
+        print(c)
 
     if IS_DEBUG:
         n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
@@ -613,7 +616,10 @@ if __name__ == "__main__":
 
     def profile_ms(op, repeats=30):
 
-        clear_cache = torch.cuda.empty_cache
+        clear_cache = functools.partial(
+            runtime.driver.active.clear_cache,  # type: ignore[attr-defined]
+            runtime.driver.active.get_empty_cache_for_benchmark(),  # type: ignore[attr-defined]
+        )
         clear_cache()
 
         # warmup
@@ -624,7 +630,7 @@ if __name__ == "__main__":
         end = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
 
         for i in range(repeats):
-            # clear_cache()
+            clear_cache()
             start[i].record()
             op()
             end[i].record()

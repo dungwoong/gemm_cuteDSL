@@ -461,7 +461,7 @@ def profile_ms(op, repeats=30):
 def torch_gemm():
     return a @ b.t()
 
-if False:
+if True:
     my_ms = profile_ms(lambda: compiled_gemm(a_cute, b_cute, c_cute, current_stream))
     other_ms = profile_ms(torch_gemm)
     print(f'{my_ms=}, {other_ms=}')

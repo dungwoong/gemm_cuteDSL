@@ -4,6 +4,8 @@ import math
 import cuda.bindings.driver as cuda
 
 import torch
+from triton import runtime
+import functools
 import statistics
 
 import cutlass
@@ -422,7 +424,7 @@ class GemmSM90:
             cute.nvgpu.warpgroup.commit_group()
             read_state.advance()
 
-        for _ in cutlass.range(k_iters, unroll=1, unroll_full=False):
+        for _ in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
             pipe.consumer_wait(read_state)
             cute.nvgpu.warpgroup.fence()
             for k_block_idx in cutlass.range(num_k_blocks, unroll_full=True):
@@ -443,6 +445,9 @@ class GemmSM90:
             read_state.advance()
             release_state.advance()
         cute.nvgpu.warpgroup.wait_group(0)
+        for k_tile in cutlass.range(num_prologue_mma, unroll=1):
+            pipe.consumer_release(release_state)
+            release_state.advance()
         return read_state, tiled_mma
 
     # More runtime stuff
@@ -628,8 +633,9 @@ if __name__ == "__main__":
                     reuse_ab=False)
     compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
     compiled_gemm(a_cute, b_cute, c_cute, current_stream)
-    print(ref)
-    print(c)
+    if IS_DEBUG:
+        print(ref)
+        print(c)
 
     if IS_DEBUG:
         n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
@@ -637,7 +643,10 @@ if __name__ == "__main__":
 
     def profile_ms(op, repeats=30):
 
-        clear_cache = torch.cuda.empty_cache
+        clear_cache = functools.partial(
+            runtime.driver.active.clear_cache,  # type: ignore[attr-defined]
+            runtime.driver.active.get_empty_cache_for_benchmark(),  # type: ignore[attr-defined]
+        )
         clear_cache()
 
         # warmup
@@ -648,7 +657,7 @@ if __name__ == "__main__":
         end = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
 
         for i in range(repeats):
-            # clear_cache()
+            clear_cache()
             start[i].record()
             op()
             end[i].record()
