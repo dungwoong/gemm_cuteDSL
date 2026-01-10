@@ -394,19 +394,39 @@ class GemmSM90:
         return state
 
     @cute.jit
-    def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor):
+    def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor):
         # I have to add prologue MMAs if I want to pipeline MMAs
-        K_PIPE_MMAS = 0
+        K_PIPE_MMAS = 1
+        release_state = read_state.clone()
+        num_prologue_mma = min(K_PIPE_MMAS, k_iters)
         num_k_blocks = cute.size(tCrA, mode=[2])
         # print(tiled_mma)
         tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
         # print(tCrA)
         # print(tCrB)
-        for _ in cutlass.range(k_iters, unroll=1, unroll_full=False):
-            pipe.consumer_wait(state)
+        for _ in cutlass.range(num_prologue_mma):
+            pipe.consumer_wait(read_state)
             cute.nvgpu.warpgroup.fence()
             for k_block_idx in cutlass.range(num_k_blocks, unroll_full=True):
-                k_block_coord = (None, None, k_block_idx, state.index)
+                k_block_coord = (None, None, k_block_idx, read_state.index)
+                tCrA_1phase = tCrA[k_block_coord]
+                tCrB_1phase = tCrB[k_block_coord]
+                cute.gemm(
+                    tiled_mma,
+                    accumulators,
+                    tCrA_1phase,
+                    tCrB_1phase,
+                    accumulators
+                )
+                tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+            cute.nvgpu.warpgroup.commit_group()
+            read_state.advance()
+
+        for _ in cutlass.range(k_iters, unroll=1, unroll_full=False):
+            pipe.consumer_wait(read_state)
+            cute.nvgpu.warpgroup.fence()
+            for k_block_idx in cutlass.range(num_k_blocks, unroll_full=True):
+                k_block_coord = (None, None, k_block_idx, read_state.index)
                 tCrA_1phase = tCrA[k_block_coord]
                 tCrB_1phase = tCrB[k_block_coord]
                 cute.gemm(
@@ -419,10 +439,11 @@ class GemmSM90:
                 tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
             cute.nvgpu.warpgroup.commit_group()
             cute.nvgpu.warpgroup.wait_group(K_PIPE_MMAS)
-            pipe.consumer_release(state)
-            state.advance()
+            pipe.consumer_release(release_state) # this can lag behind read_state
+            read_state.advance()
+            release_state.advance()
         cute.nvgpu.warpgroup.wait_group(0)
-        return state, tiled_mma
+        return read_state, tiled_mma
 
     # More runtime stuff
     # -----------------------------
