@@ -147,7 +147,6 @@ class GemmSM90:
         ts_args = self.get_tile_scheduler_args(a, b, c)
         ts_params = SimpleTileScheduler.to_underlying_arguments(ts_args)
         grid = SimpleTileScheduler.get_grid_shape(ts_params, self.max_active_clusters)
-        cute.printf(grid)
         self.kernel(
             tma_atom_a, tma_atom_b,
             tma_tensor_a, tma_tensor_b, tensor_c,
@@ -383,11 +382,11 @@ class GemmSM90:
 
     @cute.jit
     def produce_mainloop(self, k_iters: Int32, copy_a: Callable, copy_b: Callable, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState):
-        for _ in cutlass.range(k_iters, unroll=1, unroll_full=False):
+        for k_tile in cutlass.range(k_iters, unroll=1, unroll_full=False):
             pipe.producer_acquire(state) # wait empty arrive full
             mbar = pipe.producer_get_barrier(state)
-            copy_a(state.count, state.index, tma_bar_ptr=mbar)
-            copy_b(state.count, state.index, tma_bar_ptr=mbar)
+            copy_a(k_tile, state.index, tma_bar_ptr=mbar)
+            copy_b(k_tile, state.index, tma_bar_ptr=mbar)
             pipe.producer_commit(state)
             state.advance()
         # pipe.producer_tail(state)
@@ -635,6 +634,7 @@ if __name__ == "__main__":
                     is_persistent=True)
     compiled_gemm = cute.compile(gemm, a_cute, b_cute, c_cute, current_stream)
     compiled_gemm(a_cute, b_cute, c_cute, current_stream)
+    print('All close:', torch.allclose(ref, c))
     if IS_DEBUG:
         print(ref)
         print(c)
@@ -642,6 +642,7 @@ if __name__ == "__main__":
     if IS_DEBUG:
         n_incorrect = c.numel() - ((c - ref).abs() < 0.001).sum()
         print('n_incorrect :', n_incorrect)
+        print('n_nonzero :', (c != 0).sum())
 
     def profile_ms(op, repeats=30):
 
