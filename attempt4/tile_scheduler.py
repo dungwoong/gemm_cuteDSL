@@ -36,7 +36,6 @@ class SimpleTileSchedulerArguments(ArgumentsBase):
 class SimpleTileScheduler:
     @dataclass
     class Params(ParamsBase):
-        current_work_linear_idx: Int32
         ncluster_mnl: cute.Shape
         raster_order: RasterOrder
         dm_clusters_per_problem: FastDivmod

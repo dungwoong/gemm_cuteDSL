@@ -117,7 +117,7 @@ class GemmSM90:
 
         # Persistent(Future)
         self.is_persistent = is_persistent
-        self.max_active_clusters = get_max_active_clusters(cute.size(cluster_shape_mnk))
+        self.max_active_clusters = get_max_active_clusters(math.prod(cluster_shape_mnk))
 
         # Checks
         assert not (self.reuse_ab and self.is_persistent), "Persistent kernel can't reuse AB for epilogue"
@@ -147,7 +147,7 @@ class GemmSM90:
         ts_args = self.get_tile_scheduler_args(a, b, c)
         ts_params = SimpleTileScheduler.to_underlying_arguments(ts_args)
         grid = SimpleTileScheduler.get_grid_shape(ts_params, self.max_active_clusters)
-        # cute.printf(grid)
+        cute.printf(grid)
         self.kernel(
             tma_atom_a, tma_atom_b,
             tma_tensor_a, tma_tensor_b, tensor_c,
@@ -235,15 +235,12 @@ class GemmSM90:
                                                    block_in_cluster_coord_mnk[0],
                                                    cute.make_layout(cute.slice_(cluster_layout_mnk, (None, 0, 0)).shape),
                                                    gB_nk, sB, mcast_mask=b_mcast_mask)
-
-                    ab_producer_state = pipeline.make_pipeline_state(pipeline.PipelineUserType.Producer, self.ab_stage)
                     
-                    self.produce_mainloop(k_iters, copy_a, copy_b, ab_pipeline, ab_producer_state) # TODO
+                    ab_producer_state = self.produce_mainloop(k_iters, copy_a, copy_b, ab_pipeline, ab_producer_state) # TODO
                     tile_scheduler.fetch_next_work()
                     tile_scheduler.advance_to_next_work()
                     work_tile = tile_scheduler.get_current_work()
-                # TODO: if this was persistent, you may need to advance to next work here
-                # ab_pipeline.producer_tail(ab_producer_state) # this is NOT supposed to be here, that was the error
+                ab_pipeline.producer_tail(ab_producer_state)
 
         if warp_idx < self.ab_load_warp_id: # Consumer
             cute.arch.warpgroup_reg_alloc(self.num_regs_mma)
@@ -393,12 +390,13 @@ class GemmSM90:
             copy_b(state.count, state.index, tma_bar_ptr=mbar)
             pipe.producer_commit(state)
             state.advance()
-        pipe.producer_tail(state)
+        # pipe.producer_tail(state)
         return state
 
     @cute.jit
     def consume_mainloop(self, k_iters: Int32, tiled_mma: cute.TiledMma, accumulators: cute.Tensor, pipe: pipeline.PipelineAsync, read_state: pipeline.PipelineState, tCrA: cute.Tensor, tCrB: cute.Tensor):
         # I have to add prologue MMAs if I want to pipeline MMAs
+        # printwg('Consumer entered mainloop')
         K_PIPE_MMAS = 1
         release_state = read_state.clone()
         num_prologue_mma = min(K_PIPE_MMAS, k_iters)
@@ -602,6 +600,7 @@ class GemmSM90:
         self.shared_storage = SharedStorage
 
 if __name__ == "__main__":
+    print('Starting...')
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", type=str, choices=["debug", "speed", "ncu"])
