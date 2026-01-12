@@ -382,13 +382,21 @@ class GemmSM90:
 
     @cute.jit
     def produce_mainloop(self, k_iters: Int32, copy_a: Callable, copy_b: Callable, pipe: pipeline.PipelineAsync, state: pipeline.PipelineState):
+        peek_ab_empty_status = Boolean(True)
+        if 0 < k_iters:
+            peek_ab_empty_status = pipe.producer_try_acquire(state)
+
         for k_tile in cutlass.range(k_iters, unroll=1, unroll_full=False):
-            pipe.producer_acquire(state) # wait empty arrive full
+            pipe.producer_acquire(state, peek_ab_empty_status) # wait empty arrive full
             mbar = pipe.producer_get_barrier(state)
             copy_a(k_tile, state.index, tma_bar_ptr=mbar)
             copy_b(k_tile, state.index, tma_bar_ptr=mbar)
             pipe.producer_commit(state)
             state.advance()
+
+            peek_ab_empty_status = Boolean(True)
+            if k_tile + 1 < k_iters:
+                peek_ab_empty_status = pipe.producer_try_acquire(state)
         # pipe.producer_tail(state)
         return state
 
@@ -404,8 +412,12 @@ class GemmSM90:
         tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
         # print(tCrA)
         # print(tCrB)
-        for _ in cutlass.range(num_prologue_mma):
-            pipe.consumer_wait(read_state)
+        peek_ab_full_status = Boolean(True)
+        if 0 < k_iters:
+            peek_ab_full_status = pipe.consumer_try_wait(read_state)
+        
+        for k_tile in cutlass.range(num_prologue_mma):
+            pipe.consumer_wait(read_state, peek_ab_full_status)
             cute.nvgpu.warpgroup.fence()
             for k_block_idx in cutlass.range(num_k_blocks, unroll_full=True):
                 k_block_coord = (None, None, k_block_idx, read_state.index)
@@ -421,9 +433,12 @@ class GemmSM90:
                 tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
             cute.nvgpu.warpgroup.commit_group()
             read_state.advance()
+            peek_ab_full_status = Boolean(True)
+            if k_tile + 1 < k_iters:
+                peek_ab_full_status = pipe.consumer_try_wait(read_state)
 
-        for _ in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
-            pipe.consumer_wait(read_state)
+        for k_tile in cutlass.range(num_prologue_mma, k_iters, unroll=1, unroll_full=False):
+            pipe.consumer_wait(read_state, peek_ab_full_status)
             cute.nvgpu.warpgroup.fence()
             for k_block_idx in cutlass.range(num_k_blocks, unroll_full=True):
                 k_block_coord = (None, None, k_block_idx, read_state.index)
@@ -442,6 +457,11 @@ class GemmSM90:
             pipe.consumer_release(release_state) # this can lag behind read_state
             read_state.advance()
             release_state.advance()
+
+            peek_ab_full_status = Boolean(True)
+            if k_tile + 1 < k_iters:
+                peek_ab_full_status = pipe.consumer_try_wait(read_state)
+        
         cute.nvgpu.warpgroup.wait_group(0)
         for k_tile in cutlass.range(num_prologue_mma, unroll=1):
             pipe.consumer_release(release_state)
