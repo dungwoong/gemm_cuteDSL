@@ -133,7 +133,8 @@ def test_basic():
                     atom_layout_mn=(2, 1),
                     ab_stage=3,
                     reuse_ab=False,
-                    is_persistent=True)
+                    is_persistent=True,
+                    gemm_n_prologue=1)
     run_test(gm, 4096, 4096, 4096, 'gemm')
 
 def test_multicast_dims():
@@ -144,7 +145,8 @@ def test_multicast_dims():
         atom_layout_mn=(2, 1),
         ab_stage=3,
         reuse_ab=False,
-        is_persistent=True
+        is_persistent=True,
+        gemm_n_prologue=1,
     )
     run_test(gm, 4096, 4096, 4096, 'gemm_cluster22')
 
@@ -157,8 +159,31 @@ def test_atom_layout_horizontal():
         atom_layout_mn=(1, 2),
         ab_stage=3,
         reuse_ab=False,
-        is_persistent=True
+        is_persistent=True,
+        gemm_n_prologue=1,
     )
     run_test(gm, 4096, 4096, 4096, 'gemm_atom12')
+
+def test_gemm_no_prologue():
+    gm = GemmSM90(tile_shape_mn=(128, 256), 
+                    epi_tile_mn=(128, 32),
+                    cluster_shape_mnk=(2, 1, 1), 
+                    atom_layout_mn=(2, 1),
+                    ab_stage=3,
+                    reuse_ab=False,
+                    is_persistent=True,
+                    gemm_n_prologue=0)
+    run_test(gm, 4096, 4096, 4096, 'gemm_no_prologue_mma')
+
+def test_gemm_reuse_ab():
+    gm = GemmSM90(tile_shape_mn=(128, 256), 
+                    epi_tile_mn=(128, 32),
+                    cluster_shape_mnk=(2, 1, 1), 
+                    atom_layout_mn=(2, 1),
+                    ab_stage=3,
+                    reuse_ab=True,
+                    is_persistent=False,
+                    gemm_n_prologue=0)
+    run_test(gm, 4096, 4096, 4096, 'gemm_reuseab_no_persistent')
 
 # run pytest -s tests.py to collect print outputs
