@@ -114,6 +114,7 @@ class GemmSM90:
         self.reuse_ab = reuse_ab
         self.epi_smem_layout_staged = None
         self.epi_smem_size = 0
+        assert not (self.atom_layout_mn[1] > 1) or self.epi_tile_mn[1] == self.cta_tile_shape_mnk[1], 'When atom layout n > 1, we need epi tile n = cta tile n'
 
         # Persistent(Future)
         self.is_persistent = is_persistent
