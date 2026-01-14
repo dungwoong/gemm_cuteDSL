@@ -12,3 +12,8 @@ Add persistent kernel with tile scheduler, no dynamic scheduling though
 - make sure if you run a function that mutates the pipeline state, return that pipeline state so that mutation is actually assigned. Matters a lot in persistent kernels
 - I made a dumb mistake where I was initializing pipeline state INSIDE the persistent while loop. That was resetting pipeline state everytime.
 - For the actual mainloops, do NOT depend on the state's `count` variable e.g. `load global[state.count] --> shared[state.index]` because persistent kernels will ruin that on subsequent tiles. Use a cutlass loop variable instead.
+
+## Next steps
+- We are basically at peak performance I feel. The other kernel is actually A @ B.t() which is different since pytorch does the transpose work and then B is actually column-major which might help with stuff, like it might not be our problem anymore for this last 2-3%
+- I'm also not sure what I can do differently here either.
+- I'm doing gemm_tn for reference
